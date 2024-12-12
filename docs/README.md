@@ -8,6 +8,11 @@
 5. Creación de infraestructura con `terraform apply`
 6. Si necesitamos destruir la infraestructura `terraform destroy`
 
+## Repositorio de Python pyinstaller
+1. Hacer fork del repositorio https://github.com/jenkins-docs/simple-python-pyinstaller-app
+2. Clonar el repositorio forkeado a un directorio de fácil acceso (escritorio mismo).
+3. Creamos una rama main donde crearemos los archivos.
+
 ## Ficheros
 **Dockerfile**
 ```Dockerfile
@@ -134,11 +139,6 @@ resource "docker_container" "jenkins_blueocean" {
 }
 ```
 
-## Repositorio de Python pyinstaller
-1. Hacer fork del repositorio https://github.com/jenkins-docs/simple-python-pyinstaller-app
-2. Clonar el repositorio forkeado a un directorio de fácil acceso (escritorio mismo).
-3. Creamos una rama main donde crearemos los archivos.
-
 
 ## Construcción de la imagen
 1. Creamos un directorio con el archivo dockerfile y main.tf
@@ -164,7 +164,7 @@ resource "docker_container" "jenkins_blueocean" {
 6. Elegimos Git de las opciones del SCM.
 7. Introducimos la URL del repositorio de GitHub.
 8. Indicamos que use la rama main.
-9. En Script Path indicamos el directorio del Jenkinsfile /docs/Jenkinsfile.
+9. En Script Path indicamos el directorio del Jenkinsfile docs/Jenkinsfile.
 8. Guardamos la configuración.
 
 ## Creamos un Jenkinsfile
