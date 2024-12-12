@@ -11,99 +11,133 @@
 ## Ficheros
 **Dockerfile**
 ```Dockerfile
-FROM jenkins/jenkins:2.479.2-jdk17    #  Imagen de Jenkins  
+FROM jenkins/jenkins:2.479.2-jdk17
 USER root
-RUN apt-get update && apt-get install -y lsb-release    # Actualizamos paquetes
+RUN apt-get update && apt-get install -y lsb-release
 RUN curl -fsSLo /usr/share/keyrings/docker-archive-keyring.asc \
-  https://download.docker.com/linux/debian/gpg    # Añadimos la clave del repositorio Docker
-
-# Agregamos el repositorio de docker
+https://download.docker.com/linux/debian/gpg
 RUN echo "deb [arch=$(dpkg --print-architecture) \
-  signed-by=/usr/share/keyrings/docker-archive-keyring.asc] \
-  https://download.docker.com/linux/debian \
-  $(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
+signed-by=/usr/share/keyrings/docker-archive-keyring.asc] \
+https://download.docker.com/linux/debian \
+$(lsb_release -cs) stable" > /etc/apt/sources.list.d/docker.list
 
 RUN apt-get update && apt-get install -y docker-ce-cli
-
-# Instalacion de Python
-RUN apt-get install -y python3 python3-pip && \
-  ln -sf /usr/bin/python3 /usr/bin/python && ln -sf /usr/bin/pip3 /usr/bin/pip
-
-# Instalamos pytest y pyinstaler para la realización de las pruebas
-RUN apt-get install -y python3-pytest
-RUN pip install --break-system-packages pyinstaller
-
-
 USER jenkins
-# Instalamos los plugins necesarios de Jenkins
 RUN jenkins-plugin-cli --plugins "blueocean docker-workflow token-macro json-path-api"
 ```
 
 **Main.tf**
 ```dockerfile
 terraform {
-  required_providers {      # Especificamos Docker como proveedor
-    docker = {  
-    source = "kreuzwerker/docker"
-    version = "~> 3.0.1"      # Especificamos la versión
+  required_providers {
+    docker = {
+      source  = "kreuzwerker/docker"
+      version = "~> 2.25.0"
     }
   }
 }
 
 provider "docker" {}
 
+# Crear la red Docker para conectar ambos contenedores
 resource "docker_network" "jenkins_network" {
-  name = "jenkins_network"    # Creamos una red Docker
-}
-
-resource "docker_container" "dind" {
-  image = "docker:dind"     # Usamos la imagen de docker dind
-  name = "docker-in-docker"
-  network_mode = docker_network.jenkins_network.name    # Conectamos el contenedor
-
-  privileged = true     # Privilegios necesarios para dind
-  depends_on = [ docker_network.jenkins_network ]
-
-  env = [    # Configuramos de variables de entorno para dind
-    "DOCKER_TLS_CERTDIR=/certs",
-    "DOCKER_DRIVER=overlay2"
-  ]
-
-  ports {
-    internal = 2376     # Declaramos el puerto interno para la API de Docker
-    external = 2376     # Mapeamos el puerto para el Host
-  }
-}
-
-resource "docker_container" "jenkins" {
-  image = "myjenkins-blueocean" # Imagen personalizada de Jenkins
   name = "jenkins"
-  network_mode = docker_network.jenkins_network.name    # Asignamos el contenedor a la red
-  restart = "on-failure"     # Reinicio en caso de fallo
 
-  env = [   # Configuramos variables de entorno de Jenkins
-    "DOCKER_HOST=tcp://docker-in-docker:2376",
-    "DOCKER_CERT_PATH=/certs/client",
-    "DOCKER_TLS_VERIFY=1"
+  ipam_config {
+    subnet = "172.18.0.0/16"
+    gateway = "172.18.0.1"
+  }
+}
+
+# Crear volumen para almacenar certificados Docker
+resource "docker_volume" "jenkins_docker_certs" {
+  name = "jenkins-docker-certs"
+}
+
+# Crear volumen para los datos de Jenkins
+resource "docker_volume" "jenkins_data" {
+  name = "jenkins-data"
+}
+
+# Crear el contenedor Docker-in-Docker (DinD)
+resource "docker_container" "jenkins_docker" {
+  name         = "dockerindocker"
+  image        = "docker:dind"
+  privileged   = true
+  restart      = "on-failure"
+  network_mode = docker_network.jenkins_network.name
+
+  env = [
+    "DOCKER_TLS_CERTDIR=/certs"
   ]
 
   ports {
-    internal = 8080     # Declaramos el puerto interno de Jenkins
-    external = 8080     # Mapeamos el puerto para el Host
+    internal = 2376
+    external = 2376
+  }
+
+  volumes {
+    volume_name    = docker_volume.jenkins_docker_certs.name
+    container_path = "/certs/client"
+  }
+
+  volumes {
+    volume_name    = docker_volume.jenkins_data.name
+    container_path = "/var/jenkins_home"
+  }
+
+  networks_advanced {
+    name    = docker_network.jenkins_network.name
+    aliases = ["dindcontainer"]
+    ipv4_address = "172.18.0.2"
+  }
+}
+
+resource "docker_container" "jenkins_blueocean" {
+  depends_on = [docker_container.jenkins_docker]
+
+  name         = "jenkins-blueocean"
+  image        = "myjenkins-blueocean"
+  restart      = "on-failure"
+  network_mode = docker_network.jenkins_network.name
+
+  env = [
+    "DOCKER_HOST=tcp://172.18.0.2:2376",      
+    "DOCKER_CERT_PATH=/certs/client",      
+    "DOCKER_TLS_VERIFY=1"    
+  ]
+
+  ports {
+    internal = 8080
+    external = 8080
   }
 
   ports {
-    internal = 50000      # Puerto para agentes de Jenkins
-    external = 50000      # Mapeamos el puerto para agentes
+    internal = 50000
+    external = 50000
   }
 
-  depends_on = [ docker_container.dind ]
+  volumes {
+    volume_name    = docker_volume.jenkins_data.name
+    container_path = "/var/jenkins_home"
+  }
+
+  volumes {
+    volume_name    = docker_volume.jenkins_docker_certs.name
+    container_path = "/certs/client"
+    read_only      = true
+  }
+
+  networks_advanced {
+    name = docker_network.jenkins_network.name
+  }
 }
 ```
 
 ## Repositorio de Python pyinstaller
 1. Hacer fork del repositorio https://github.com/jenkins-docs/simple-python-pyinstaller-app
 2. Clonar el repositorio forkeado a un directorio de fácil acceso (escritorio mismo).
+3. Creamos una rama main donde crearemos los archivos.
 
 
 ## Construcción de la imagen
@@ -129,71 +163,38 @@ resource "docker_container" "jenkins" {
 5. Seleccionamos Definition y Pipeline Script from SCM (le indica a Jenkins que obtenga el Pipeline del Source Control Management).
 6. Elegimos Git de las opciones del SCM.
 7. Introducimos la URL del repositorio de GitHub.
+8. Indicamos que use la rama main.
+9. En Script Path indicamos el directorio del Jenkinsfile /docs/Jenkinsfile.
 8. Guardamos la configuración.
 
 ## Creamos un Jenkinsfile
 1. Creamos un nuevo Jenkinsfile en la raiz del proyecto forkeado.
-2. Copiamos y pegamos este fragmento de código:
+2. Copiamos y pegamos el Jenkinsfile del enunciado:
   ```groovy
-    pipeline {
-      agent any 
-      stages {
-        stage('Build') { 
-          steps {
-            sh 'python -m py_compile sources/add2vals.py sources/calc.py' 
-            stash(name: 'compiled-results', includes: 'sources/*.py*') 
-          }
-        }
-      }
+  pipeline {
+    agent none
+    options {
+      skipStagesAfterUnstable()
     }
-  ```
-3. Guardamos y hacemos commit y push al repositorio.
-4. Construimos el Pipeline.
-5. Si pulsamos sobre la build vemos detalles de la build.
 
-    5.1 Luego podemos pulsar en el panel izquierdo Pipeline Overview para ver stages del pipeline.
-    
-    5.2 Si clicamos en el build stage del pipeline podemos ver más información.
-
-6. Ahora añadimos al Jenkinsfile un nuevo stage para hacer testing.
-  ```groovy
-    pipeline {
-      agent any 
-      stages {
-        stage('Build') { 
-          steps {
-            sh 'python -m py_compile sources/add2vals.py sources/calc.py' 
-            stash(name: 'compiled-results', includes: 'sources/*.py*') 
-          }
-        }
-        stage('Test') {
-          steps {
-            sh 'py.test --junit-xml test-reports/results.xml sources/test_calc.py'
-          }
-          post {
-            always {
-              junit 'test-reports/results.xml'
-            }
-          }
-        }
-      }
-    }
-  ```
-7. Subimos de nuevo a GitHub y ejecutamos otra vez.
-8. Ahora vemos en la vista de Stage que hay un stage llamado Test. Si clicas en él puedes ver el output de los tests.
-
-9. Ahora añadimos al Jenkinsfile un nuevo Stage llamado Deliver.
-  ```groovy
-    pipeline {
-    agent any 
     stages {
-      stage('Build') { 
+      stage('Build') {
+        agent {
+          docker {
+            image 'python:3.12.0-alpine3.18'
+          }
+        }
         steps {
-          sh 'python -m py_compile sources/add2vals.py sources/calc.py' 
-          stash(name: 'compiled-results', includes: 'sources/*.py*') 
+          sh 'python -m py_compile sources/add2vals.py sources/calc.py'
+          stash(name: 'compiled-results', includes: 'sources/*.py*')
         }
       }
       stage('Test') {
+        agent {
+          docker {
+            image 'qnib/pytest'
+          }
+        }
         steps {
           sh 'py.test --junit-xml test-reports/results.xml sources/test_calc.py'
         }
@@ -203,19 +204,25 @@ resource "docker_container" "jenkins" {
           }
         }
       }
-      stage('Deliver') { 
+      stage('Deliver') {
+        agent any
+        environment {
+          VOLUME = '$(pwd)/sources:/src'
+          IMAGE = 'cdrx/pyinstaller-linux:python2'
+        }
         steps {
-          sh "pyinstaller --onefile sources/add2vals.py" 
+          dir(path: env.BUILD_ID) {
+            unstash(name: 'compiled-results')
+            sh "docker run --rm -v ${VOLUME} ${IMAGE} 'pyinstaller -F add2vals.py'"
+          }
         }
         post {
           success {
-            archiveArtifacts 'dist/add2vals' 
+            archiveArtifacts "${env.BUILD_ID}/sources/dist/add2vals"
+            sh "docker run --rm -v ${VOLUME} ${IMAGE} 'rm -rf build dist'"
           }
         }
       }
     }
   }
   ```
-
-10. Subimos los cambios al repositorio y volvemos a ejecutar el Pipeline.
-11. Podemos ver el Pipeline Overview y ver los resultados de la instalación.
